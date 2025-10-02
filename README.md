@@ -23,7 +23,7 @@ cd bcrypt-bruteforce
 pip install -r requirements.txt
 ```
 
-> Or install dependencies directly: `pip install bcrypt tqdm`
+> Or install dependencies directly: `pip install bcrypt tqdm colorama`
 
 ---
 
