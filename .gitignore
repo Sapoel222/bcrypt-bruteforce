@@ -1,0 +1,96 @@
+# ---- Python bytecode / cache ----
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+.conda/
+condaenv.*
+pip-wheel-metadata/
+
+# ---- Packaging / build artifacts ----
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+*.egg
+*.manifest
+*.spec  # PyInstaller
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+
+# ---- Tests & coverage ----
+.pytest_cache/
+.coverage
+.coverage.*
+.cache/
+nosetests.xml
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# ---- Type checkers / linters ----
+.mypy_cache/
+.pytype/
+.pyre/
+.ruff_cache/
+.pylint.d
+.pyright/
+
+# ---- Logs ----
+*.log
+logs/
+*.out
+
+# ---- Editors / IDEs ----
+.vscode/
+.idea/
+*.code-workspace
+
+# ---- OS cruft ----
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+Icon\r
+.Spotlight-V100
+.Trashes
+Desktop.ini
+
+# ---- Env & secrets (keep real secrets out of VCS) ----
+.env
+.env.*
+*.env
+*.ini.local
+*.secret
+*.secrets
+*.key
+*.pem
+*.p12
+
+# ---- Local databases ----
+*.sqlite
+*.sqlite3
+*.db
+
+# ---- Misc temp files ----
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+
+# ---- Sphinx docs ----
+docs/_build/
+
+# ---- Local caches ----
+.cache/
+__pypackages__/
