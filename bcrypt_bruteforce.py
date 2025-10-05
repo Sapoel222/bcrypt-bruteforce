@@ -10,7 +10,6 @@ import multiprocessing as mp
 from typing import Optional
 from multiprocessing.sharedctypes import Synchronized
 from multiprocessing import Event
-
 import bcrypt
 
 # ---------- Colored bullets ----------
