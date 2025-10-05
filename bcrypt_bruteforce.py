@@ -9,6 +9,7 @@ import queue
 import multiprocessing as mp
 from typing import Optional
 from multiprocessing.sharedctypes import Synchronized
+from multiprocessing import Event
 
 import bcrypt
 
@@ -46,13 +47,46 @@ def count_lines_fast(path: str) -> int:
     return lines
 
 # ---------- Worker ----------
+def decode_line(raw: bytes, encoding: str) -> str:
+    try:
+        return raw.decode(encoding, errors="ignore").rstrip("\r\n")
+    except Exception:
+        return raw.decode("utf-8", errors="ignore").rstrip("\r\n")
+
+def check_password(line: str, encoding: str, bcrypt_hash: bytes) -> bool:
+    try:
+        return bcrypt.checkpw(line.encode(encoding, errors="ignore"), bcrypt_hash)
+    except ValueError as e:
+        sys.stderr.write(f"{B_WARN} bcrypt error: {e}\n")
+        return False
+
+def process_line(
+    raw: bytes,
+    encoding: str,
+    bcrypt_hash: bytes,
+    result_q: mp.Queue,
+    found_event,
+    progress_counter: Optional[Synchronized[int]],
+) -> bool:
+    line = decode_line(raw, encoding)
+    if not line:
+        _inc_progress(progress_counter, 1)
+        return False
+    if check_password(line, encoding, bcrypt_hash):
+        result_q.put(line)
+        found_event.set()
+        _inc_progress(progress_counter, 1)
+        return True
+    _inc_progress(progress_counter, 1)
+    return False
+
 def worker_scan(
     path: str,
     start: int,
     end: Optional[int],
     bcrypt_hash: bytes,
     encoding: str,
-    found_event: mp.Event,
+    found_event,
     result_q: mp.Queue,  # plain multiprocessing.Queue
     progress_counter: Optional[Synchronized[int]],
 ) -> None:
@@ -67,13 +101,11 @@ def worker_scan(
                 fb.seek(start - 1)
                 prev = fb.read(1)
                 if prev != b"\n":
-                    # We were in the middle of a line; consume to the end of that line
                     fb.readline()
             else:
                 fb.seek(0)
             pos = fb.tell()
 
-            # Process lines until end boundary (include line that starts exactly at 'end')
             while (end is None) or (pos <= end):
                 if found_event.is_set():
                     return
@@ -83,27 +115,8 @@ def worker_scan(
                     break
                 pos = fb.tell()
 
-                try:
-                    line = raw.decode(encoding, errors="ignore").rstrip("\r\n")
-                except Exception:
-                    line = raw.decode("utf-8", errors="ignore").rstrip("\r\n")
-
-                if not line:
-                    _inc_progress(progress_counter, 1)
-                    continue
-
-                try:
-                    if bcrypt.checkpw(line.encode(encoding, errors="ignore"), bcrypt_hash):
-                        result_q.put(line)
-                        found_event.set()
-                        _inc_progress(progress_counter, 1)
-                        return
-                except ValueError as e:
-                    sys.stderr.write(f"{B_WARN} bcrypt error: {e}\n")
-                    found_event.set()
+                if process_line(raw, encoding, bcrypt_hash, result_q, found_event, progress_counter):
                     return
-
-                _inc_progress(progress_counter, 1)
 
     except Exception as e:
         sys.stderr.write(f"{B_WARN} Worker exception: {e}\n")
@@ -141,7 +154,7 @@ def split_file_offsets(path: str, workers: int) -> list[tuple[int, Optional[int]
 def run_progress_bar(
     total_lines: Optional[int],
     counter: Synchronized[int],
-    stop_event: mp.Event,
+    stop_event,
     label: str = "Testing"
 ) -> None:
     tqdm = _get_tqdm()
@@ -181,7 +194,7 @@ def i_bar(width: int, cur: int, total: int) -> str:
     return "[" + "#" * filled + "-" * (width - filled) + "]"
 
 # ---------- CLI ----------
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(
         description="Dictionary attack against a bcrypt hash using multiprocessing (defaults to all detected CPU cores)."
     )
@@ -193,55 +206,47 @@ def main():
         help="Number of processes (default: all detected CPU cores)"
     )
     parser.add_argument("--no-progress", action="store_true", help="Disable progress bar/ETA")
-    args = parser.parse_args()
+    return parser.parse_args()
 
+def validate_args(args):
     if not os.path.isfile(args.wordlist):
         print(f"{B_ERR} Wordlist not found: {args.wordlist}", file=sys.stderr)
         sys.exit(1)
-
     if args.workers < 1:
         args.workers = 1  # -W 0 => single process
-
-    bcrypt_hash = args.hash.encode("utf-8")
     if not args.hash.startswith("$2"):
         print(f"{B_WARN} This does not look like a bcrypt hash ($2a/$2b/$2y). Continuing...", file=sys.stderr)
 
-    # Count lines for progress/ETA (optional)
-    total_lines: Optional[int] = None
+def get_total_lines(wordlist):
     try:
-        total_lines = count_lines_fast(args.wordlist)
+        return count_lines_fast(wordlist)
     except Exception:
-        total_lines = None
+        return None
 
-    found_event = mp.Event()
-    progress_stop = mp.Event()
-    result_q: mp.Queue = mp.Queue()
-    progress_counter: Optional[Synchronized[int]] = None if args.no_progress else mp.Value("i", 0)
+def launch_progress_process(total_lines, progress_counter, progress_stop):
+    progress_proc = mp.Process(
+        target=run_progress_bar,
+        args=(total_lines, progress_counter, progress_stop, "Testing"),
+        daemon=True,
+    )
+    progress_proc.start()
+    return progress_proc
 
-    # Launch progress process
-    progress_proc: Optional[mp.Process] = None
-    if progress_counter is not None:
-        progress_proc = mp.Process(
-            target=run_progress_bar,
-            args=(total_lines, progress_counter, progress_stop, "Testing"),
-            daemon=True,
-        )
-        progress_proc.start()
-
-    # Spawn workers
-    ranges = split_file_offsets(args.wordlist, args.workers)
+def spawn_workers(wordlist, workers, bcrypt_hash, encoding, found_event, result_q, progress_counter):
+    ranges = split_file_offsets(wordlist, workers)
     procs: list[mp.Process] = []
     for (start, end) in ranges:
         p = mp.Process(
             target=worker_scan,
-            args=(args.wordlist, start, end, bcrypt_hash, args.encoding, found_event, result_q, progress_counter),
+            args=(wordlist, start, end, bcrypt_hash, encoding, found_event, result_q, progress_counter),
         )
         p.start()
         procs.append(p)
+    return procs
 
+def collect_result(procs, result_q, found_event):
     match: Optional[str] = None
     try:
-        # Robust collection loop
         while True:
             try:
                 match = result_q.get(timeout=0.05)
@@ -250,7 +255,6 @@ def main():
                 pass
 
             if not any(p.is_alive() for p in procs):
-                # Drain once in case a result arrived just at the end
                 try:
                     match = result_q.get_nowait()
                 except queue.Empty:
@@ -259,17 +263,33 @@ def main():
     except KeyboardInterrupt:
         print(f"\n{B_WARN} Interrupted by user.", file=sys.stderr)
         found_event.set()
-    finally:
-        # Stop progress and join processes
-        progress_stop.set()
-        for p in procs:
-            p.join(timeout=0.5)
-        for p in procs:
-            if p.is_alive():
-                p.terminate()
-        if progress_proc is not None:
-            progress_proc.join(timeout=0.5)
+    return match
 
+def cleanup(procs, progress_proc, progress_stop):
+    progress_stop.set()
+    for p in procs:
+        p.join(timeout=0.5)
+    for p in procs:
+        if p.is_alive():
+            p.terminate()
+    if progress_proc is not None:
+        progress_proc.join(timeout=0.5)
+
+def main():
+    args = parse_args()
+    validate_args(args)
+    bcrypt_hash = args.hash.encode("utf-8")
+    total_lines: Optional[int] = get_total_lines(args.wordlist)
+    found_event = mp.Event()
+    progress_stop = mp.Event()
+    result_q: mp.Queue = mp.Queue()
+    progress_counter: Optional[Synchronized[int]] = None if args.no_progress else mp.Value("i", 0)
+    progress_proc: Optional[mp.Process] = None
+    if progress_counter is not None:
+        progress_proc = launch_progress_process(total_lines, progress_counter, progress_stop)
+    procs = spawn_workers(args.wordlist, args.workers, bcrypt_hash, args.encoding, found_event, result_q, progress_counter)
+    match = collect_result(procs, result_q, found_event)
+    cleanup(procs, progress_proc, progress_stop)
     if match:
         print(f"{B_OK} Match found: {match}")
         sys.exit(0)
