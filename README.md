@@ -18,7 +18,7 @@ A fast, simple **dictionary attacker for Bcrypt hashes** written in Python.
 ## 📦 Installation
 
 ```bash
-git clone https://github.com/your-user/bcrypt-bruteforce.git
+git clone https://github.com/fr0gb1t/bcrypt-bruteforce.git
 cd bcrypt-bruteforce
 pip install -r requirements.txt
 ```
